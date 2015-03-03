@@ -117,14 +117,16 @@ static NSCharacterSet* kIllegalNameChars;
     return [_dir stringByAppendingPathComponent:[name stringByAppendingPathExtension:kDBExtension]];
 }
 
-- (TD_Database*)databaseNamed:(NSString*)name create:(BOOL)create
+- (TD_Database*)databaseNamed:(NSString*)name
+    withEncryptionKeyRetriever:(id<CDTEncryptionKeyRetrieving>)retriever
+                        create:(BOOL)create
 {
     if (_options.readOnly) create = NO;
     TD_Database* db = _databases[name];
     if (!db) {
         NSString* path = [self pathForName:name];
         if (!path) return nil;
-        db = [[TD_Database alloc] initWithPath:path];
+        db = [[TD_Database alloc] initWithPath:path encryptionKeyRetriever:retriever];
         db.readOnly = _options.readOnly;
         if (!create && !db.exists) {
             return nil;
@@ -135,18 +137,24 @@ static NSCharacterSet* kIllegalNameChars;
     return db;
 }
 
-- (TD_Database*)databaseNamed:(NSString*)name { return [self databaseNamed:name create:YES]; }
+- (TD_Database*)databaseNamed:(NSString*)name
+    withEncryptionKeyRetriever:(id<CDTEncryptionKeyRetrieving>)retriever
+{
+    return [self databaseNamed:name withEncryptionKeyRetriever:retriever create:YES];
+}
 
 - (TD_Database*)existingDatabaseNamed:(NSString*)name
+           withEncryptionKeyRetriever:(id<CDTEncryptionKeyRetrieving>)retriever
 {
-    TD_Database* db = [self databaseNamed:name create:NO];
+    TD_Database* db = [self databaseNamed:name withEncryptionKeyRetriever:retriever create:NO];
     if (db && ![db open]) db = nil;
     return db;
 }
 
 - (BOOL)deleteDatabaseNamed:(NSString*)name
+    withEncryptionKeyRetriever:(id<CDTEncryptionKeyRetrieving>)retriever
 {
-    TD_Database* db = [self databaseNamed:name];
+    TD_Database* db = [self databaseNamed:name withEncryptionKeyRetriever:retriever];
     if (!db) return NO;
     [db deleteDatabase:NULL];
     [_databases removeObjectForKey:name];
@@ -205,35 +213,69 @@ static NSDictionary* parseSourceOrTarget(NSDictionary* properties, NSString* key
     NSString* target = targetDict[@"url"];
     if (!source || !target) return kTDStatusBadRequest;
 
-    *outCreateTarget = [$castIf(NSNumber, properties[@"create_target"]) boolValue];
-    *outIsPush = NO;
+    id<CDTEncryptionKeyRetrieving> encryptionKeyRetriever = properties[@"encryptionKeyRetriever"];
+    if (!encryptionKeyRetriever) {
+        return kTDStatusBadRequest;
+    }
+
+    BOOL createTarget = [$castIf(NSNumber, properties[@"create_target"]) boolValue];
+    if (outCreateTarget) {
+        *outCreateTarget = createTarget;
+    }
+
+    if (outIsPush) {
+        *outIsPush = NO;
+    }
+
     TD_Database* db = nil;
     NSDictionary* remoteDict = nil;
     if ([TD_DatabaseManager isValidDatabaseName:source]) {
-        if (outDatabase) db = [self existingDatabaseNamed:source];
+        if (outDatabase) {
+            db = [self existingDatabaseNamed:source
+                  withEncryptionKeyRetriever:encryptionKeyRetriever];
+        }
+
         remoteDict = targetDict;
-        *outIsPush = YES;
+
+        if (outIsPush) {
+            *outIsPush = YES;
+        }
     } else {
-        if (![TD_DatabaseManager isValidDatabaseName:target]) return kTDStatusBadID;
+        if (![TD_DatabaseManager isValidDatabaseName:target]) {
+            return kTDStatusBadID;
+        }
+
         remoteDict = sourceDict;
         if (outDatabase) {
-            if (*outCreateTarget) {
-                db = [self databaseNamed:target];
-                if (![db open]) return kTDStatusDBError;
+            if (createTarget) {
+                db = [self databaseNamed:target withEncryptionKeyRetriever:encryptionKeyRetriever];
+                if (![db open]) {
+                    return kTDStatusDBError;
+                }
             } else {
-                db = [self existingDatabaseNamed:target];
+                db = [self existingDatabaseNamed:target
+                      withEncryptionKeyRetriever:encryptionKeyRetriever];
             }
         }
     }
+
     NSURL* remote = [NSURL URLWithString:remoteDict[@"url"]];
-    if (![@[ @"http", @"https", @"touchdb" ] containsObject:remote.scheme.lowercaseString])
+    if (![@[ @"http", @"https", @"touchdb" ] containsObject:remote.scheme.lowercaseString]) {
         return kTDStatusBadRequest;
+    }
+
     if (outDatabase) {
         *outDatabase = db;
-        if (!db) return kTDStatusNotFound;
+        if (!db) {
+            return kTDStatusNotFound;
+        }
     }
-    if (outRemote) *outRemote = remote;
-    if (outHeaders) *outHeaders = $castIf(NSDictionary, properties[@"headers"]);
+    if (outRemote) {
+        *outRemote = remote;
+    }
+    if (outHeaders) {
+        *outHeaders = $castIf(NSDictionary, properties[@"headers"]);
+    }
 
     //    if (outAuthorizer) {
     //        *outAuthorizer = nil;

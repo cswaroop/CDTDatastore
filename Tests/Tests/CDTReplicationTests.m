@@ -23,6 +23,7 @@
 #import "TDReplicatorManager.h"
 #import "CDTDocumentRevision.h"
 #import "CDTDocumentBody.h"
+#import "CDTEncryptionKeyDummyRetriever.h"
 #import "TD_Body.h"
 #import "TD_Revision.h"
 #import "TDPuller.h"
@@ -34,17 +35,23 @@
 
 @implementation CDTReplicationTests
 
--(void)testDictionaryForPullReplicationDocument
+- (void)testDictionaryForPullReplicationDocument
 {
     NSString *remoteUrl = @"https://adam:cox@myaccount.cloudant.com/mydb";
-    NSDictionary *expectedDictionary = @{@"target":@"test_database",
-                                         @"source": remoteUrl,
-                                         @"filter": @"myddoc/myfilter",
-                                         @"query_params":@{@"min":@23, @"max":@43}};
+    CDTEncryptionKeyDummyRetriever *dummy = [CDTEncryptionKeyDummyRetriever dummy];
+    NSDictionary *expectedDictionary = @{
+        @"target" : @"test_database",
+        @"encryptionKeyRetriever" : dummy,
+        @"source" : remoteUrl,
+        @"filter" : @"myddoc/myfilter",
+        @"query_params" : @{@"min" : @23, @"max" : @43}
+    };
 
     
     NSError *error;
-    CDTDatastore *tmp = [self.factory datastoreNamed:@"test_database" error:&error];
+    CDTDatastore *tmp = [self.factory datastoreNamed:@"test_database"
+                          withEncryptionKeyRetriever:dummy
+                                               error:&error];
     CDTPullReplication *pull = [CDTPullReplication replicationWithSource:[NSURL URLWithString:remoteUrl]
                                                                   target:tmp];
     
@@ -67,15 +74,21 @@
     XCTAssertEqualObjects([tdreplicator class], [TDPuller class], @"Wrong Type of TDReplicator. %@", error);
 }
 
--(void)testDictionaryForPushReplicationDocument
+- (void)testDictionaryForPushReplicationDocument
 {
     NSString *remoteUrl = @"https://adam:cox@myaccount.cloudant.com/mydb";
-    NSDictionary *expectedDictionary = @{@"source":@"test_database",
-                                         @"target": remoteUrl};
-    
+    CDTEncryptionKeyDummyRetriever *dummy = [CDTEncryptionKeyDummyRetriever dummy];
+    NSDictionary *expectedDictionary = @{
+        @"source" : @"test_database",
+        @"encryptionKeyRetriever" : dummy,
+        @"target" : remoteUrl
+    };
+
     NSError *error;
-    CDTDatastore *tmp = [self.factory datastoreNamed:@"test_database" error:&error];
-    
+    CDTDatastore *tmp = [self.factory datastoreNamed:@"test_database"
+                          withEncryptionKeyRetriever:dummy
+                                               error:&error];
+
     CDTPushReplication *push = [CDTPushReplication replicationWithSource:tmp
                                                                   target:[NSURL URLWithString:remoteUrl]];
 

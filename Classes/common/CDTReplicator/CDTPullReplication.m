@@ -83,6 +83,7 @@
 
     if (self.target) {
         [doc setObject:self.target.name forKey:@"target"];
+        [doc setObject:[self.target copyEncryptionKeyRetriever] forKey:@"encryptionKeyRetriever"];
     } else {
         CDTLogWarn(CDTREPLICATION_LOG_CONTEXT,
                 @"CDTPullReplication -dictionaryForReplicatorDocument Error: target is nil.");

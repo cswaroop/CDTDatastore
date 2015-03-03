@@ -17,6 +17,8 @@
 
 extern NSString *const CDTDatastoreErrorDomain;
 
+@protocol CDTEncryptionKeyRetrieving;
+
 @class CDTDatastore;
 @class TD_DatabaseManager;
 
@@ -41,7 +43,8 @@ extern NSString *const CDTDatastoreErrorDomain;
 - (id)initWithDirectory:(NSString *)directoryPath error:(NSError **)outError;
 
 /**
- Returns a datastore for the given name.
+ Returns a datastore for the given name. Data in the datastore is not encrypted.
+ If not key is provided at the moment the datastore is created, it can not be encrypted later on.
 
  @param name datastore name
  @param error will point to an NSError object in case of error.
@@ -49,6 +52,23 @@ extern NSString *const CDTDatastoreErrorDomain;
  @see CDTDatastore
  */
 - (CDTDatastore *)datastoreNamed:(NSString *)name error:(NSError *__autoreleasing *)error;
+
+/**
+ Returns a datastore for the given name. If a key is provided, datastore files are encrypted before
+ saving to disk (attachments and extensions not included).
+ If a key is provided the first time the datastore is open, only this key will be valid the next
+ time. In the same way, if no key is informed, the datastore will not be cipher and can not be
+ cipher later on.
+
+ @param name datastore name
+ @param retriever it returns the key to cipher the datastore
+ @param error will point to an NSError object in case of error.
+
+ @see CDTDatastore
+ */
+- (CDTDatastore *)datastoreNamed:(NSString *)name
+      withEncryptionKeyRetriever:(id<CDTEncryptionKeyRetrieving>)retriever
+                           error:(NSError *__autoreleasing *)error;
 
 /**
  Deletes a datastore for the given name.
@@ -63,6 +83,24 @@ extern NSString *const CDTDatastoreErrorDomain;
 
  */
 - (BOOL)deleteDatastoreNamed:(NSString *)name error:(NSError *__autoreleasing *)error;
+
+/**
+ Deletes a datastore for the given name. If the datastore is encrypted, the same key used to open
+ it has to be provided to delete it.
+
+ All datastore files, including attachments and extensions, are deleted.
+
+ Currently it is the responsibility of the caller to ensure that extensions should be shutdown (and
+ their underlying databases closed) before calling this method.
+
+ @param name datastore name
+ @param retriever it returns the key to cipher the datastore
+ @param error will point to an NSError object in case of error.
+
+ */
+- (BOOL)deleteDatastoreNamed:(NSString *)name
+    withEncryptionKeyRetriever:(id<CDTEncryptionKeyRetrieving>)encryptionKey
+                         error:(NSError *__autoreleasing *)error;
 
 /**
  

@@ -31,6 +31,7 @@
 #import "FMDatabaseAdditions.h"
 #import "FMDatabase+LongLong.h"
 #import "FMDatabaseQueue.h"
+#import "CDTEncryptionKeyRetrieving.h"
 #import "CDTLogging.h"
 
 NSString* const TD_DatabaseWillCloseNotification = @"TD_DatabaseWillClose";
@@ -80,20 +81,23 @@ static BOOL removeItemIfExists(NSString* path, NSError** outError)
 }
 
 + (TD_Database*)createEmptyDBAtPath:(NSString*)path
+         withEncryptionKeyRetriever:(id<CDTEncryptionKeyRetrieving>)retriever
 {
     if (!removeItemIfExists(path, NULL)) return nil;
-    TD_Database* db = [[self alloc] initWithPath:path];
+    TD_Database* db = [[self alloc] initWithPath:path encryptionKeyRetriever:retriever];
     if (!removeItemIfExists(db.attachmentStorePath, NULL)) return nil;
     if (![db open]) return nil;
     return db;
 }
 
-- (id)initWithPath:(NSString*)path
+- (id)initWithPath:(NSString*)path encryptionKeyRetriever:(id<CDTEncryptionKeyRetrieving>)retriever
 {
     if (self = [super init]) {
         Assert([path hasPrefix:@"/"], @"Path must be absolute");
+        Assert(retriever, @"Key retriever is mandatory. Provide a dummy instance instead");
         _path = [path copy];
         _name = [path.lastPathComponent.stringByDeletingPathExtension copy];
+        _encryptionKeyRetriever = [retriever copy];
 
         if (0) {
             // Appease the static analyzer by using these category ivars in this source file:
@@ -107,6 +111,11 @@ static BOOL removeItemIfExists(NSString* path, NSError** outError)
 - (NSString*)description { return $sprintf(@"%@[%@]", [self class], _path); }
 
 - (BOOL)exists { return [[NSFileManager defaultManager] fileExistsAtPath:_path]; }
+
+- (id<CDTEncryptionKeyRetrieving>)copyEncryptionKeyRetriever
+{
+    return [_encryptionKeyRetriever copy];
+}
 
 - (BOOL)replaceWithDatabaseFile:(NSString*)databasePath
                 withAttachments:(NSString*)attachmentsPath
@@ -195,38 +204,64 @@ static BOOL removeItemIfExists(NSString* path, NSError** outError)
 // callers: -open, -compact
 - (BOOL)openFMDB
 {
+#ifdef SQLITE_OPEN_FILEPROTECTION_COMPLETEUNLESSOPEN
     int flags = SQLITE_OPEN_FILEPROTECTION_COMPLETEUNLESSOPEN;
-    if (_readOnly)
+#else
+    int flags = kNilOptions;
+#endif
+    if (_readOnly) {
         flags |= SQLITE_OPEN_READONLY;
-    else
+    } else {
         flags |= SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
+    }
     CDTLogInfo(CDTDATASTORE_LOG_CONTEXT, @"Open %@ (flags=%X)", _path, flags);
+
     _fmdbQueue = [FMDatabaseQueue databaseQueueWithPath:_path flags:flags];
-    if (!_fmdbQueue) return NO;
-
-    // Register CouchDB-compatible JSON collation functions:
-    [_fmdbQueue inDatabase:^(FMDatabase* db) {
-        sqlite3_create_collation(db.sqliteHandle, "JSON", SQLITE_UTF8, kTDCollateJSON_Unicode,
-                                 TDCollateJSON);
-        sqlite3_create_collation(db.sqliteHandle, "JSON_RAW", SQLITE_UTF8, kTDCollateJSON_Raw,
-                                 TDCollateJSON);
-        sqlite3_create_collation(db.sqliteHandle, "JSON_ASCII", SQLITE_UTF8, kTDCollateJSON_ASCII,
-                                 TDCollateJSON);
-        sqlite3_create_collation(db.sqliteHandle, "REVID", SQLITE_UTF8, NULL, TDCollateRevIDs);
-    }];
-
-    __block BOOL result = YES;
-    __weak TD_Database* weakSelf = self;
-    [_fmdbQueue inDatabase:^(FMDatabase* db) {
-        // Stuff we need to initialize every time the database opens:
-        TD_Database* strongSelf = weakSelf;
-        if (![strongSelf initialize:@"PRAGMA foreign_keys = ON;" inDatabase:db]) result = NO;
-    }];
-    if (!result) {
+    if (!_fmdbQueue) {
         return NO;
     }
 
-    return YES;
+    __block BOOL result = YES;
+
+    // Cipher database
+    if (result) {
+        NSString* key = [_encryptionKeyRetriever encryptionKeyOrNil];
+        if (key) {
+            [_fmdbQueue inDatabase:^(FMDatabase* db) {
+              result = [db setKey:key];
+            }];
+
+            if (!result) {
+                CDTLogError(CDTDATASTORE_LOG_CONTEXT, @"Key to cipher database not set");
+            }
+        }
+    }
+
+    // Register CouchDB-compatible JSON collation functions:
+    if (result) {
+        [_fmdbQueue inDatabase:^(FMDatabase* db) {
+          sqlite3_create_collation(db.sqliteHandle, "JSON", SQLITE_UTF8, kTDCollateJSON_Unicode,
+                                   TDCollateJSON);
+          sqlite3_create_collation(db.sqliteHandle, "JSON_RAW", SQLITE_UTF8, kTDCollateJSON_Raw,
+                                   TDCollateJSON);
+          sqlite3_create_collation(db.sqliteHandle, "JSON_ASCII", SQLITE_UTF8, kTDCollateJSON_ASCII,
+                                   TDCollateJSON);
+          sqlite3_create_collation(db.sqliteHandle, "REVID", SQLITE_UTF8, NULL, TDCollateRevIDs);
+        }];
+    }
+
+    // Stuff we need to initialize every time the database opens:
+    if (result) {
+        __weak TD_Database* weakSelf = self;
+        [_fmdbQueue inDatabase:^(FMDatabase* db) {
+          TD_Database* strongSelf = weakSelf;
+          if (!strongSelf || ![strongSelf initialize:@"PRAGMA foreign_keys = ON;" inDatabase:db]) {
+              result = NO;
+          }
+        }];
+    }
+
+    return result;
 }
 
 // callers: many things
